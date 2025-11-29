@@ -1,0 +1,5 @@
+{
+  "name": "MangaColorizer AI",
+  "description": "An intelligent manga coloring platform that searches the web for character color palettes and uses Gemini to apply them to black-and-white pages.",
+  "requestFramePermissions": []
+}
