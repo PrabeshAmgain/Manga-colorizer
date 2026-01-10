@@ -1,13 +1,44 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { GroundingSource } from "../types";
 
 const getClient = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.API_KEY;
   if (!apiKey) {
     throw new Error("API Key is missing. Please check your configuration.");
   }
   return new GoogleGenAI({ apiKey });
 };
+
+// Helper for delay
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Generic retry wrapper with exponential backoff
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  retries: number = 3,
+  initialDelay: number = 1000,
+  backoffFactor: number = 2
+): Promise<T> {
+  let attempt = 0;
+  let delay = initialDelay;
+
+  while (attempt < retries) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      attempt++;
+      console.warn(`Attempt ${attempt} failed: ${error.message || error}`);
+      
+      if (attempt >= retries) {
+        throw error;
+      }
+
+      await wait(delay);
+      delay *= backoffFactor;
+    }
+  }
+  throw new Error("Retry loop failed unexpectedly");
+}
 
 // Helper to convert File to Base64
 export const fileToBase64 = (file: File): Promise<string> => {
@@ -27,6 +58,39 @@ export const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
+// Helper to get image dimensions from base64 string
+const getImageDimensions = (base64: string): Promise<{ width: number; height: number }> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.width, height: img.height });
+    img.src = `data:image/png;base64,${base64}`;
+  });
+};
+
+// Helper to find the closest supported aspect ratio for Gemini
+const getBestAspectRatio = (width: number, height: number): string => {
+  const ratio = width / height;
+  const supportedRatios = {
+    "1:1": 1,
+    "3:4": 3/4,
+    "4:3": 4/3,
+    "9:16": 9/16,
+    "16:9": 16/9
+  };
+  
+  let closest = "1:1";
+  let minDiff = Infinity;
+
+  for (const [key, value] of Object.entries(supportedRatios)) {
+    const diff = Math.abs(ratio - value);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = key;
+    }
+  }
+  return closest;
+};
+
 /**
  * Step 1: Search for color information using Google Search Grounding
  */
@@ -36,15 +100,15 @@ export const searchMangaColors = async (mangaName: string, characterFocus?: stri
   const query = `What are the official colors for the characters in the manga "${mangaName}"? ${characterFocus ? `Focus on ${characterFocus}.` : ''} List hair color, eye color, skin tone, and outfit colors.`;
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await withRetry<GenerateContentResponse>(() => ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: query,
       config: {
         tools: [{ googleSearch: {} }],
       },
-    });
+    }));
 
-    const text = response.text || "No specific color data found. Using AI prediction.";
+    const text = response.text || "Use standard vibrant anime coloring style.";
     
     // Extract sources if available
     const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
@@ -55,9 +119,9 @@ export const searchMangaColors = async (mangaName: string, characterFocus?: stri
 
     return { description: text, sources };
   } catch (error) {
-    console.error("Search failed:", error);
+    console.error("Search failed after retries:", error);
     return { 
-      description: "Could not retrieve online data. Using internal model knowledge for coloring.", 
+      description: "Use a standard, high-quality, vibrant anime color palette suitable for this manga genre. Use natural skin tones and distinct hair colors.", 
       sources: [] 
     };
   }
@@ -74,22 +138,29 @@ export const colorizeMangaPage = async (
 ): Promise<string> => {
   const ai = getClient();
 
+  // 1. Calculate best aspect ratio to prevent squashing/cropping/hallucination
+  const { width, height } = await getImageDimensions(imageBase64);
+  const aspectRatio = getBestAspectRatio(width, height);
+
   const prompt = `
-    You are a professional manga colorist. 
-    Task: Color this black and white manga page.
+    You are an expert manga colorist.
     
-    Reference Color Information (from web search):
+    TASK: Transform this Black and White manga page into a FULLY COLORED version.
+    
+    STRICT RULES:
+    1. **APPLY VIBRANT COLORS**: The output MUST be in color. Do not output a grayscale image. Use the reference colors provided.
+    2. **PRESERVE STRUCTURE**: Keep the original line art, text bubbles, and layout exactly as they are. Do not redraw characters or change poses.
+    3. **FILL TECHNIQUE**: Apply color to all white and grey areas. Keep black ink lines black.
+    4. **LIGHTING**: Add dramatic anime-style lighting and shading to enhance the scene.
+
+    Reference Colors:
     ${colorDescription}
     
-    Instructions:
-    1. Apply the reference colors accurately to the characters described.
-    2. For background elements or characters not mentioned, use artistic judgement to match the manga's genre/mood.
-    3. Maintain the shading and line art style of the original image.
-    4. Return a high-quality colored image.
+    If specific colors are not clear, use a standard vivid anime color palette appropriate for the genre.
   `;
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await withRetry<GenerateContentResponse>(() => ai.models.generateContent({
       model: 'gemini-2.5-flash-image', // "Nano Banana"
       contents: {
         parts: [
@@ -104,7 +175,12 @@ export const colorizeMangaPage = async (
           },
         ],
       },
-    });
+      config: {
+        imageConfig: {
+          aspectRatio: aspectRatio,
+        }
+      }
+    }));
 
     // Iterate to find the image part in the response
     for (const part of response.candidates?.[0]?.content?.parts || []) {
@@ -115,7 +191,7 @@ export const colorizeMangaPage = async (
 
     throw new Error("No image generated in response.");
   } catch (error) {
-    console.error("Colorization failed:", error);
+    console.error("Colorization failed after retries:", error);
     throw error;
   }
 };
