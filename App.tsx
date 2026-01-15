@@ -1,9 +1,11 @@
+
 import React, { useState } from 'react';
 import { Hero } from './components/Hero';
 import { UploadForm } from './components/UploadForm';
 import { ResultView } from './components/ResultView';
-import { MangaRequest, ProcessingState, ColoringResult } from './types';
+import { MangaRequest, ProcessingState, ColoringResult, GroundingSource } from './types';
 import { fileToBase64, searchMangaColors, colorizeMangaPage } from './services/geminiService';
+import { COLOR_PRESETS } from './constants/presets';
 
 const App: React.FC = () => {
   const [state, setState] = useState<ProcessingState>({ status: 'idle', message: '' });
@@ -14,12 +16,23 @@ const App: React.FC = () => {
 
     try {
       setResult(null);
-      setState({ status: 'searching', message: `Searching web for "${data.mangaName}" official colors...` });
+      let colorDescription = "";
+      let sources: GroundingSource[] = [];
 
-      // 1. Search for Colors
-      const searchResult = await searchMangaColors(data.mangaName, data.characterFocus);
+      if (data.mode === 'search') {
+        setState({ status: 'searching', message: `Searching web for "${data.mangaName}" official colors...` });
+        const searchResult = await searchMangaColors(data.mangaName, data.characterFocus);
+        colorDescription = searchResult.description;
+        sources = searchResult.sources;
+      } else {
+        const preset = COLOR_PRESETS.find(p => p.id === data.presetId) || COLOR_PRESETS[0];
+        colorDescription = preset.description;
+        setState({ status: 'coloring', message: `Applying "${preset.label}" style preset...` });
+      }
       
-      setState({ status: 'coloring', message: 'Analyzing image and applying colors with Gemini 2.5...' });
+      if (data.mode === 'search') {
+        setState({ status: 'coloring', message: 'Analyzing image and applying colors with Gemini...' });
+      }
 
       // 2. Prepare Image
       const base64Image = await fileToBase64(data.file);
@@ -28,14 +41,14 @@ const App: React.FC = () => {
       const coloredImageBase64 = await colorizeMangaPage(
         base64Image,
         data.file.type,
-        searchResult.description
+        colorDescription
       );
 
       setResult({
         originalImage: base64Image,
         coloredImage: coloredImageBase64,
-        colorPaletteDescription: searchResult.description,
-        sources: searchResult.sources
+        colorPaletteDescription: colorDescription,
+        sources: sources
       });
 
       setState({ status: 'complete', message: 'Done!' });
@@ -73,19 +86,22 @@ const App: React.FC = () => {
                <div className="absolute inset-2 border-b-4 border-blue-500 rounded-full animate-spin-reverse"></div>
             </div>
             <h3 className="text-2xl font-bold mb-2 animate-pulse">
-              {state.status === 'searching' ? 'Grounding Search...' : 'Gemini Painting...'}
+              {state.status === 'searching' ? 'Grounding Search...' : 'Gemini Artist Painting...'}
             </h3>
             <p className="text-gray-400">{state.message}</p>
           </div>
         )}
 
         {state.status === 'error' && (
-           <div className="max-w-xl mx-auto bg-red-900/20 border border-red-500 rounded-xl p-6 text-center">
-             <h3 className="text-xl font-bold text-red-500 mb-2">Error</h3>
+           <div className="max-w-xl mx-auto bg-red-900/20 border border-red-500 rounded-xl p-8 text-center">
+             <div className="w-16 h-16 bg-red-500/20 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+               <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+             </div>
+             <h3 className="text-xl font-bold text-red-500 mb-2">Processing Error</h3>
              <p className="text-gray-300 mb-6">{state.message}</p>
              <button 
                 onClick={handleReset}
-                className="bg-gray-800 hover:bg-gray-700 text-white px-6 py-2 rounded-lg transition-colors"
+                className="bg-gray-800 hover:bg-gray-700 text-white px-8 py-3 rounded-lg transition-colors font-semibold"
              >
                Try Again
              </button>
@@ -98,9 +114,10 @@ const App: React.FC = () => {
 
       </main>
 
-      <footer className="border-t border-gray-800 py-8 mt-auto bg-gray-950">
+      <footer className="border-t border-gray-800 py-10 mt-auto bg-gray-950">
         <div className="container mx-auto px-4 text-center text-gray-500 text-sm">
-          <p>© {new Date().getFullYear()} MangaColorizer AI. Powered by Google Gemini 2.5 Flash & Search Grounding.</p>
+          <p className="mb-2">© {new Date().getFullYear()} MangaColorizer AI. Experimental Creative Platform.</p>
+          <p>Powered by Google Gemini 2.5 Flash Image & AI Search Grounding.</p>
         </div>
       </footer>
     </div>

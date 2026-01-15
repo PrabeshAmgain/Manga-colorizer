@@ -1,3 +1,4 @@
+
 export interface ProcessingState {
   status: 'idle' | 'searching' | 'coloring' | 'complete' | 'error';
   message: string;
@@ -15,8 +16,12 @@ export interface ColoringResult {
   sources: GroundingSource[];
 }
 
+export type ColoringMode = 'search' | 'preset';
+
 export interface MangaRequest {
   mangaName: string;
-  characterFocus: string; // Optional context
+  characterFocus: string; 
   file: File | null;
+  mode: ColoringMode;
+  presetId?: string;
 }
